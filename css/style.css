@@ -266,3 +266,63 @@ footer {
   font-size: 0.95rem;
   border-radius: 0.25rem;
 }
+/* Espacements utilitaires */
+.mb-4 {
+  margin-bottom: 1.5rem !important;
+}
+
+/* Bouton petite taille */
+.btn-sm {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+  line-height: 1.2;
+}
+
+/* Formulaire déjà blanc et centré, mais s’assurer qu’il prend tout l’espace disponible */
+.form-container {
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto 1rem;
+  box-sizing: border-box;
+}
+
+/* Tableau simple : quadrillage visible */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+table th,
+table td {
+  border: 1px solid #dee2e6;
+  padding: 0.75rem;
+  text-align: left;
+}
+
+/* Pour les petits textes sous input */
+.form-container small {
+  display: block;
+  margin-top: 0.25rem;
+  color: #6c757d;
+  font-size: 0.85rem;
+}
+/* Pour aligner checkbox + label sur une seule ligne et centrer */
+.checkbox-group {
+  display: flex;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+/* Espace entre la case et le texte */
+.checkbox-group input[type="checkbox"] {
+  margin-right: 0.5rem;
+}
+
+.form-container .checkbox-group {
+  display: inline-flex;      /* inline-flex ici */
+  align-items: center;       /* centrer verticalement */
+  margin-top: 1rem;          /* espacement par rapport aux champs au-dessus */
+}
+
+.form-container .checkbox-group input[type="checkbox"] {
+  margin: 0 0.5rem 0 0;      /* 0.5rem entre case et label */
+}

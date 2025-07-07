@@ -151,7 +151,7 @@ require __DIR__ . '/includes/header.php';
         2/ Filtrer la ou les catégories de codes à conserver </br>
         3/ Sélectionner le ou les codes à soumettre sur un ou plusieurs jours (cliquer sur "+" pour soumettre plusieurs codes pour un même jour) </br>
         4/ Cliquer sur "Valider" avant de changer de filtre de catégories.</br>
-        5/ Cliquer sur "Soumettre mes souhaits" quand vous avez terminé les saisies d'une semaine ou à tout moment.
+        5/ Cliquer sur "Soumettre mes souhaits" quand vous avez terminé les saisies d'une semaine et avant de changer de semaine.
     </div>
 
     <?php if ($errors): ?>

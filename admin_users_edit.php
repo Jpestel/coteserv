@@ -139,7 +139,11 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     <?php endif; ?>
 
-    <form method="post" class="form-container">
+
+    <form method="post"
+        class="form-container"
+        autocomplete="off">
+
         <label for="pseudo">Pseudo</label>
         <input type="text" id="pseudo" name="pseudo" value="<?= htmlspecialchars($user['pseudo']) ?>" required>
 
@@ -167,17 +171,29 @@ require_once __DIR__ . '/includes/header.php';
             <?php endforeach; ?>
         </select>
 
-        <div>
-            <label>
-                <input type="checkbox" name="actif" value="1" <?= $user['actif'] ? 'checked' : '' ?>> Actif
-            </label>
+        <div class="form-group checkbox-group">
+            <input type="checkbox"
+                id="actif"
+                name="actif"
+                value="1"
+                <?= $user['actif'] ? 'checked' : '' ?>>
+            <label for="actif">Actif</label>
         </div>
-
         <label for="password">Mot de passe <?= $isEdit ? '(laisser vide si inchangé)' : '' ?></label>
-        <input type="password" id="password" name="password" <?= $isEdit ? '' : 'required' ?>>
+        <input type="password"
+            id="password"
+            name="password"
+            autocomplete="new-password"
+            <?= $isEdit ? '' : 'required' ?>>
+
 
         <label for="password2">Confirmation du mot de passe</label>
-        <input type="password" id="password2" name="password2" <?= $isEdit ? '' : 'required' ?>>
+        <input type="password"
+            id="password2"
+            name="password2"
+            autocomplete="new-password"
+            <?= $isEdit ? '' : 'required' ?>>
+
 
         <button type="submit"><?= $isEdit ? 'Enregistrer' : 'Créer' ?></button>
         <a href="admin_users.php" class="btn">Annuler</a>
