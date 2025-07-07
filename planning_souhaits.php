@@ -123,6 +123,21 @@ if ($selectedMois) {
     $joursOuvres = (int)$md['jours_ouvres_par_semaine'];
     $daysInMonth = (int)(new DateTimeImmutable("$Y-$m-01"))->format('t');
 
+    // charger les événements pour ce service & mois
+    $eventsByDay = [];
+    $evtStmt = $pdo->prepare("
+      SELECT `date`, titre
+        FROM evenements
+       WHERE service_id = ?
+         AND YEAR(`date`)  = ?
+         AND MONTH(`date`) = ?
+    ");
+    $evtStmt->execute([$serviceId, $Y, $m]);
+    foreach ($evtStmt->fetchAll(PDO::FETCH_ASSOC) as $evt) {
+        $day = (int)(new DateTimeImmutable($evt['date']))->format('j');
+        $eventsByDay[$day][] = $evt['titre'];
+    }
+
     // découpage en semaines
     $tmp = [];
     for ($d = 1; $d <= $daysInMonth; $d++) {
@@ -231,12 +246,25 @@ require __DIR__ . '/includes/header.php';
                             <th>Agent</th>
                             <?php foreach ($week as $d): ?>
                                 <th>
+                                    <!-- AFFICHAGE ÉVÉNEMENTS SI PRÉSENTS -->
+                                    <?php if (!empty($eventsByDay[$d])): ?>
+                                        <ul class="evt-list">
+                                            <?php foreach ($eventsByDay[$d] as $titre): ?>
+                                                <li class="evt-item"><?= htmlspecialchars($titre, ENT_QUOTES) ?></li>
+                                            <?php endforeach; ?>
+                                        </ul>
+                                    <?php endif; ?>
+
                                     <?= $d ?: '' ?><br>
-                                    <?= $d ? ucfirst($wkdayF->format(new DateTimeImmutable("$Y-$m-" . sprintf('%02d', $d)))) : '' ?>
+                                    <?= $d
+                                        ? ucfirst($wkdayF->format(new DateTimeImmutable("$Y-$m-" . sprintf('%02d', $d))))
+                                        : ''
+                                    ?>
                                 </th>
                             <?php endforeach; ?>
                         </tr>
                     </thead>
+
                     <tbody>
                         <?php foreach ($agents as $ag):
                             $uid = $ag['id'];
