@@ -1,163 +1,158 @@
 <?php
 // planning_souhaits.php
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+session_start();
 require_once __DIR__ . '/config/db.php';
 
-// Accès réservé aux agents, chefdecote et admin
+// 0) Droits
 if (
-    !isset($_SESSION['user_id']) ||
-    !in_array($_SESSION['user_role'], ['agent', 'chefdecote', 'admin'], true)
+    !isset($_SESSION['user_id'])
+    || !in_array($_SESSION['user_role'], ['agent', 'chefdecote', 'admin'], true)
 ) {
     header('Location: login.php');
     exit;
 }
-
 $userId    = $_SESSION['user_id'];
 $serviceId = $_SESSION['user_service_id'];
 
-// 1) Charger les mois ouverts
+// 1) Mois ouverts
 $moisStmt = $pdo->prepare("
-    SELECT id, mois 
-      FROM mois_ouvert 
-     WHERE id_service = ? AND actif = 1
-     ORDER BY mois
+  SELECT id, mois
+    FROM mois_ouvert
+   WHERE id_service = ? AND actif = 1
+   ORDER BY mois
 ");
 $moisStmt->execute([$serviceId]);
 $moisList = $moisStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Choix du mois en GET
-$selectedMoisId = (int)($_GET['mois_id'] ?? 0);
-
-// 2) Sauvegarde POST
-$success = null;
-$errors  = [];
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && $selectedMoisId > 0) {
-    // Récupère le mois pour compter le nombre de jours
-    $mStmt = $pdo->prepare("SELECT mois FROM mois_ouvert WHERE id = ?");
-    $mStmt->execute([$selectedMoisId]);
-    list($Y, $m) = explode('-', $mStmt->fetchColumn());
-    $daysInMonth = (int)(new DateTimeImmutable("$Y-$m-01"))->format('t');
-
-    // On boucle uniquement sur les jours où l'agent a posté quelque chose
-    foreach (array_keys($_POST['codes'] ?? []) as $d) {
-        $d = (int)$d;
-        $codes = array_unique(array_filter($_POST['codes'][$d], fn($c) => $c !== ''));
-
-        // 2.1) Supprimer les anciens pending pour ce jour
-        $del = $pdo->prepare("
-            DELETE FROM souhaits
-             WHERE user_id = :uid
-               AND mois_ouvert_id = :mid
-               AND jour = :jour
-               AND statut = 'pending'
-        ");
-        $del->execute([
-            'uid'  => $userId,
-            'mid'  => $selectedMoisId,
-            'jour' => $d
-        ]);
-
-        // 2.2) Réinsérer tous les codes sélectionnés en pending
-        $ins = $pdo->prepare("
-            INSERT INTO souhaits
-              (user_id, mois_ouvert_id, jour, code_id, statut)
-            VALUES
-              (:uid, :mid, :jour, :cid, 'pending')
-        ");
-        foreach ($codes as $cid) {
-            $ins->execute([
-                'uid'  => $userId,
-                'mid'  => $selectedMoisId,
-                'jour' => $d,
-                'cid'  => (int)$cid,
-            ]);
-        }
-    }
-
-    $success = 'Vos souhaits ont bien été enregistrés et sont en attente de validation.';
-}
-
-// 3) Préparer la grille si un mois est sélectionné
-$daysInMonth = 0;
-$souhaits     = [];
-if ($selectedMoisId > 0) {
-    // Charger mois & jours ouvrés
-    $mo = $pdo->prepare("
-        SELECT mois, jours_ouvres_par_semaine
-          FROM mois_ouvert
-         WHERE id = ?
-    ");
-    $mo->execute([$selectedMoisId]);
-    $row = $mo->fetch(PDO::FETCH_ASSOC);
-    list($Y, $m) = explode('-', $row['mois']);
-    $daysInMonth = (int)(new DateTimeImmutable("$Y-$m-01"))->format('t');
-    $joursOuvres  = (int)$row['jours_ouvres_par_semaine'];
-
-    // Charger les souhaits déjà en base
-    $sh = $pdo->prepare("
-        SELECT jour, code_id, statut
-          FROM souhaits
-         WHERE user_id = ? 
-           AND mois_ouvert_id = ?
-    ");
-    $sh->execute([$userId, $selectedMoisId]);
-    foreach ($sh->fetchAll(PDO::FETCH_ASSOC) as $r) {
-        $souhaits[$r['jour']][] = $r;
-    }
-}
-
-// 4) Charger catégories & codes
-$cats = $pdo->prepare("
-    SELECT id, name
-      FROM code_category
-     WHERE service_id = ?
-     ORDER BY name
+// 2) Agents du service
+$agStmt = $pdo->prepare("
+  SELECT id, nom, prenom
+    FROM user
+   WHERE id_service = ? AND role IN ('agent','chefdecote','admin')
+   ORDER BY nom, prenom
 ");
-$cats->execute([$serviceId]);
-$categories = $cats->fetchAll();
+$agStmt->execute([$serviceId]);
+$agents = $agStmt->fetchAll(PDO::FETCH_ASSOC);
 
-$cd = $pdo->prepare("
-    SELECT c.id, c.code, c.label, c.category_id
-      FROM code c
-      JOIN code_category cat ON c.category_id = cat.id
-     WHERE cat.service_id = ?
-     ORDER BY cat.name, c.code
+// 3) Catégories & codes pour <select>
+$catStmt = $pdo->prepare("
+  SELECT id, name
+    FROM code_category
+   WHERE service_id = ?
+   ORDER BY name
 ");
-$cd->execute([$serviceId]);
-$allCodes = $cd->fetchAll();
+$catStmt->execute([$serviceId]);
+$categories = $catStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Organiser par catégorie
+$codeStmt = $pdo->prepare("
+  SELECT c.id, c.code, c.category_id
+    FROM code c
+    JOIN code_category cat ON c.category_id = cat.id
+   WHERE cat.service_id = ?
+   ORDER BY cat.name, c.code
+");
+$codeStmt->execute([$serviceId]);
+$allCodes = $codeStmt->fetchAll(PDO::FETCH_ASSOC);
+
 $codesByCat = [];
 foreach ($allCodes as $c) {
     $codesByCat[$c['category_id']][] = $c;
 }
 
-// Formatters FR pour l’affichage
-$monthF = new IntlDateFormatter(
-    'fr_FR',
-    IntlDateFormatter::NONE,
-    IntlDateFormatter::NONE,
-    'Europe/Paris',
-    IntlDateFormatter::GREGORIAN,
-    'MMMM yyyy'
-);
-$wkdayF = new IntlDateFormatter(
-    'fr_FR',
-    IntlDateFormatter::NONE,
-    IntlDateFormatter::NONE,
-    'Europe/Paris',
-    IntlDateFormatter::GREGORIAN,
-    'EEE'
-);
+// 4) Sélection du mois et de la semaine
+$selectedMois = (int)($_GET['mois_id'] ?? 0);
+$weekIndex    = max(0, (int)($_GET['week'] ?? 0));
 
-$pageTitle = 'Saisie des souhaits';
+// 5) POST : enregistrement
+$success = null;
+$errors  = [];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $selectedMois) {
+    // récupérer année/mois
+    $mStmt = $pdo->prepare("SELECT mois FROM mois_ouvert WHERE id=?");
+    $mStmt->execute([$selectedMois]);
+    list($Y, $m) = explode('-', $mStmt->fetchColumn());
+    // on boucle seulement sur jours où l'agent a soumis
+    foreach (array_keys($_POST['codes'] ?? []) as $d) {
+        $d = (int)$d;
+        $codes = array_unique(array_filter($_POST['codes'][$d], fn($c) => $c !== ''));
+        // supprimer anciens pending
+        $pdo->prepare("
+          DELETE FROM souhaits
+           WHERE user_id=? AND mois_ouvert_id=? AND jour=? AND statut='pending'
+        ")->execute([$userId, $selectedMois, $d]);
+        // réinsérer
+        $ins = $pdo->prepare("
+          INSERT INTO souhaits(user_id,mois_ouvert_id,jour,code_id,statut)
+          VALUES(?,?,?,?, 'pending')
+        ");
+        foreach ($codes as $cid) {
+            $ins->execute([$userId, $selectedMois, $d, (int)$cid]);
+        }
+    }
+    $success = 'Vos souhaits ont été enregistrés en attente de validation.';
+}
+
+// 6) Préparer la grille si mois
+$weeks = [];
+$joursOuvres = 0;
+$souhaits    = [];
+if ($selectedMois) {
+    // charger mois
+    $mo = $pdo->prepare("
+      SELECT mois, jours_ouvres_par_semaine
+        FROM mois_ouvert WHERE id=?
+    ");
+    $mo->execute([$selectedMois]);
+    $md = $mo->fetch(PDO::FETCH_ASSOC);
+    list($Y, $m) = explode('-', $md['mois']);
+    $joursOuvres = (int)$md['jours_ouvres_par_semaine'];
+    $daysInMonth = (int)(new DateTimeImmutable("$Y-$m-01"))->format('t');
+
+    // construire semaines
+    $tmp = [];
+    for ($d = 1; $d <= $daysInMonth; $d++) {
+        $dt = new DateTimeImmutable("$Y-$m-" . sprintf("%02d", $d));
+        $dow = (int)$dt->format('N');
+        $tmp[$dow] = $d;
+        if ($dow === 7 || $d === $daysInMonth) {
+            for ($i = 1; $i <= 7; $i++) if (!isset($tmp[$i])) $tmp[$i] = null;
+            ksort($tmp);
+            $weeks[] = $tmp;
+            $tmp = [];
+        }
+    }
+    if (!isset($weeks[$weekIndex])) $weekIndex = 0;
+    $week = $weeks[$weekIndex];
+
+    // charger tous souhaits pour ce mois
+    $sh = $pdo->prepare("
+      SELECT user_id,jour,code_id,statut
+        FROM souhaits
+       WHERE mois_ouvert_id=?
+    ");
+    $sh->execute([$selectedMois]);
+    foreach ($sh->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        $souhaits[$r['user_id']][$r['jour']][] = $r;
+    }
+}
+
+// 7) Formatters FR
+$monthF = new IntlDateFormatter('fr_FR', IntlDateFormatter::NONE, IntlDateFormatter::NONE, 'Europe/Paris', IntlDateFormatter::GREGORIAN, 'MMMM yyyy');
+$wkdayF = new IntlDateFormatter('fr_FR', IntlDateFormatter::NONE, IntlDateFormatter::NONE, 'Europe/Paris', IntlDateFormatter::GREGORIAN, 'EEE');
+
+$pageTitle = 'Planning des souhaits';
 require __DIR__ . '/includes/header.php';
 ?>
 
 <div class="container content">
     <h2><?= htmlspecialchars($pageTitle, ENT_QUOTES) ?></h2>
+    <div class="instructions">
+        1/ Sélectionner un mois ouvert</br>
+        2/ Filtrer la ou les catégories de codes à conserver </br>
+        3/ Sélectionner le ou les codes à soumettre sur un ou plusieurs jours (cliquer sur "+" pour soumettre plusieurs codes pour un même jour) </br>
+        4/ Cliquer sur "Valider" avant de changer de filtre de catégories.</br>
+        5/ Cliquer sur "Soumettre mes souhaits" quand vous avez terminé les saisies d'une semaine ou à tout moment.
+    </div>
 
     <?php if ($errors): ?>
         <div class="errors">
@@ -173,177 +168,203 @@ require __DIR__ . '/includes/header.php';
         </div>
     <?php endif; ?>
 
-    <!-- Sélecteur de mois -->
+    <!-- 1) Sélecteur de mois -->
     <form method="get" class="form-container">
-        <label for="mois_id">Choisissez un mois</label>
-        <select id="mois_id" name="mois_id" required>
-            <option value="">--</option>
+        <label for="mois_id">1/ Sélectionner un mois ouvert</label>
+        <select id="mois_id" name="mois_id" onchange="this.form.submit()">
+            <option value="">–</option>
             <?php foreach ($moisList as $mth):
                 $lbl = ucfirst($monthF->format(new DateTimeImmutable($mth['mois'] . '-01')));
             ?>
-                <option value="<?= $mth['id'] ?>"
-                    <?= $mth['id'] == $selectedMoisId ? 'selected' : '' ?>>
+                <option value="<?= $mth['id'] ?>" <?= $mth['id'] == $selectedMois ? 'selected' : '' ?>>
                     <?= htmlspecialchars($lbl, ENT_QUOTES) ?>
                 </option>
             <?php endforeach; ?>
         </select>
-        <button type="submit">Afficher</button>
     </form>
 
-    <?php if ($selectedMoisId > 0): ?>
-        <!-- Filtrer par catégories -->
-        <div class="category-filter">
+    <?php if ($selectedMois): ?>
+        <!-- Navigation semaine -->
+        <div class="week-nav mb-3">
+            <?php if ($weekIndex > 0): ?>
+                <a href="?mois_id=<?= $selectedMois ?>&week=<?= $weekIndex - 1 ?>"
+                    class="btn btn-sm btn-primary">&larr; Sem. préc.</a>
+            <?php endif; ?>
+            <strong>
+                <?php
+                $s = reset($week);
+                $e = end($week);
+                printf(
+                    "Sem. du %02d au %02d %s",
+                    $s,
+                    $e,
+                    ucfirst($monthF->format(new DateTimeImmutable("$Y-$m-01")))
+                );
+                ?>
+            </strong>
+            <?php if (isset($weeks[$weekIndex + 1])): ?>
+                <a href="?mois_id=<?= $selectedMois ?>&week=<?= $weekIndex + 1 ?>"
+                    class="btn btn-sm btn-primary">Sem. suiv. &rarr;</a>
+            <?php endif; ?>
+
+        </div>
+
+        <!-- Filtre catégories -->
+        <h4>2/ Filtrer par catégorie de codes</h4>
+        <div class="category-filter mb-3">
+
             <?php foreach ($categories as $cat): ?>
+
                 <button type="button" class="cat-btn active" data-cat="<?= $cat['id'] ?>">
                     <?= htmlspecialchars($cat['name'], ENT_QUOTES) ?>
                 </button>
             <?php endforeach; ?>
         </div>
 
-        <!-- Grille mensuelle -->
-        <form method="post" class="grid-form">
-            <table class="planning-grid">
-                <?php
-                // Construire les semaines
-                $weeks = [];
-                $wk = [];
-                for ($d = 1; $d <= $daysInMonth; $d++) {
-                    $dt = new DateTimeImmutable(sprintf("%04d-%02d-%02d", $Y, $m, $d));
-                    $dow = (int)$dt->format('N');
-                    $wk[$dow] = $d;
-                    if ($dow === 7 || $d === $daysInMonth) {
-                        for ($i = 1; $i <= 7; $i++) if (!isset($wk[$i])) $wk[$i] = null;
-                        ksort($wk);
-                        $weeks[] = $wk;
-                        $wk = [];
-                    }
-                }
-                foreach ($weeks as $week):
-                ?>
+        <!-- Template select -->
+        <template id="tpl-code-select">
+            <select class="code-select">
+                <option value="">-</option>
+                <?php foreach ($categories as $cat): ?>
+                    <?php foreach ($codesByCat[$cat['id']] ?? [] as $c): ?>
+                        <option value="<?= $c['id'] ?>" data-cat="<?= $cat['id'] ?>">
+                            <?= htmlspecialchars($c['code'], ENT_QUOTES) ?>
+                        </option>
+                    <?php endforeach; ?>
+                <?php endforeach; ?>
+            </select>
+        </template>
+
+        <!-- Grille -->
+        <div class="planning-wrapper">
+
+            <form method="post" class="grid-form">
+                <button
+                    type="submit"
+                    class="btn btn-success">Soumettre mes souhaits</button>
+                <table class="planning-all">
                     <thead>
                         <tr>
+                            <h4>3/ Sélectionner le ou les codes dans chaque case jour ouvré</h4>
+
                             <th>Agent</th>
                             <?php foreach ($week as $d): ?>
                                 <th>
                                     <?= $d ?: '' ?><br>
-                                    <?php if ($d): ?>
-                                        <?= ucfirst($wkdayF->format(
-                                            new DateTimeImmutable(sprintf("%04d-%02d-%02d", $Y, $m, $d))
-                                        )) ?>
-                                    <?php endif; ?>
+                                    <?= $d
+                                        ? ucfirst($wkdayF->format(
+                                            new DateTimeImmutable(
+                                                sprintf("%04d-%02d-%02d", $Y, $m, $d)
+                                            )
+                                        ))
+                                        : ''
+                                    ?>
                                 </th>
                             <?php endforeach; ?>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr>
-                            <td><?= htmlspecialchars($_SESSION['user_prenom'], ENT_QUOTES) ?></td>
-                            <?php foreach ($week as $d): ?>
-                                <td>
-                                    <?php
-                                    if (!$d) {
-                                        // cellule vide hors mois
-                                        continue;
-                                    }
-                                    $dt  = new DateTimeImmutable(sprintf("%04d-%02d-%02d", $Y, $m, $d));
-                                    $dow = (int)$dt->format('N');
-                                    if ($dow > $joursOuvres) {
-                                        // weekend ou hors jours ouvrés
-                                        continue;
-                                    }
-
-                                    // on récupère les souhaits du jour
-                                    $entries = $souhaits[$d] ?? [];
-                                    // statut partagé (tous les codes ont même statut)
-                                    $statut = $entries[0]['statut'] ?? null;
-                                    $isSubmitted = in_array($statut, ['pending', 'validated', 'refused'], true);
-                                    ?>
-                                    <div
-                                        class="day-cell <?= $isSubmitted ? 'submitted' : '' ?>"
-                                        data-jour="<?= $d ?>">
-                                        <?php if ($isSubmitted): ?>
-                                            <!-- affichage des codes soumis + statut + bouton Modifier -->
-                                            <?php foreach ($entries as $e):
-                                                $lbl = '-';
-                                                foreach ($allCodes as $c) {
-                                                    if ($c['id'] === (int)$e['code_id']) {
-                                                        $lbl = $c['code'];
-                                                        break;
+                        <?php foreach ($agents as $ag):
+                            $uid = $ag['id'];
+                        ?>
+                            <tr>
+                                <td><?= htmlspecialchars($ag['prenom'] . ' ' . $ag['nom'], ENT_QUOTES) ?></td>
+                                <?php foreach ($week as $d): ?>
+                                    <td>
+                                        <?php
+                                        if (!$d) continue;
+                                        $dt  = new DateTimeImmutable(sprintf("%04d-%02d-%02d", $Y, $m, $d));
+                                        if ((int)$dt->format('N') > $joursOuvres) continue;
+                                        $ents   = $souhaits[$uid][$d] ?? [];
+                                        $stat   = $ents[0]['statut'] ?? null;
+                                        $locked = in_array($stat, ['pending', 'validated', 'refused'], true);
+                                        ?>
+                                        <div
+                                            class="day-cell <?= $locked ? 'submitted' : '' ?>"
+                                            data-jour="<?= $d ?>">
+                                            <?php if ($locked): ?>
+                                                <?php foreach ($ents as $e):
+                                                    // n’affiche que le code
+                                                    $lbl = '-';
+                                                    foreach ($allCodes as $c) {
+                                                        if ($c['id'] == $e['code_id']) {
+                                                            $lbl = $c['code'];
+                                                            break;
+                                                        }
                                                     }
-                                                }
-                                            ?>
-                                                <div class="submitted-code">
-                                                    <select disabled class="code-select">
-                                                        <option><?= htmlspecialchars($lbl, ENT_QUOTES) ?></option>
-                                                    </select>
-                                                    <span class="status <?= $statut ?>">
-                                                        <?= $statut === 'pending'   ? 'En attente'
-                                                            : ($statut === 'validated' ? 'Validé' : 'Refusé') ?>
-                                                    </span>
-                                                </div>
-                                            <?php endforeach; ?>
-
-                                            <!-- bouton Modifier toujours visible en mode submitted -->
-                                            <button type="button" class="modify-btn">Modifier</button>
-
-                                        <?php else: ?>
-                                            <!-- mode saisie libre : selects + + + Valider -->
-                                            <?php
-                                            // au moins un select (vide si pas d'existant)
-                                            $existing = array_map(fn($r) => $r['code_id'], $entries) ?: [''];
-                                            foreach ($existing as $cid):
-                                            ?>
-                                                <select name="codes[<?= $d ?>][]" class="code-select">
-                                                    <option value="">-</option>
-                                                    <?php foreach ($categories as $cat): ?>
-                                                        <?php foreach ($codesByCat[$cat['id']] ?? [] as $c):
-                                                            $sel = ($c['id'] == $cid) ? 'selected' : '';
-                                                        ?>
-                                                            <option
-                                                                value="<?= $c['id'] ?>"
-                                                                data-cat="<?= $cat['id'] ?>"
-                                                                <?= $sel ?>>
-                                                                <?= htmlspecialchars($c['code'], ENT_QUOTES) ?>
-                                                            </option>
-                                                        <?php endforeach; ?>
+                                                ?>
+                                                    <div class="submitted-code">
+                                                        <span class="code-text">
+                                                            <?= htmlspecialchars($lbl, ENT_QUOTES) ?>
+                                                        </span>
+                                                        <span class="status <?= $e['statut'] ?>">
+                                                            <?= $e['statut'] === 'pending'
+                                                                ? 'En attente'
+                                                                : ($e['statut'] === 'validated'
+                                                                    ? 'Validé'
+                                                                    : 'Refusé'
+                                                                )
+                                                            ?>
+                                                        </span>
+                                                    </div>
+                                                <?php endforeach; ?>
+                                                <?php if ($uid === $userId): ?>
+                                                    <button
+                                                        type="button"
+                                                        class="modify-btn">Modifier</button>
+                                                <?php endif; ?>
+                                            <?php else: ?>
+                                                <?php if ($uid === $userId):
+                                                    $exist = array_map(fn($r) => $r['code_id'], $ents) ?: [''];
+                                                    foreach ($exist as $cid): ?>
+                                                        <select
+                                                            name="codes[<?= $d ?>][]"
+                                                            class="code-select">
+                                                            <option value="">-</option>
+                                                            <?php foreach ($categories as $cat): ?>
+                                                                <?php foreach ($codesByCat[$cat['id']] ?? [] as $c):
+                                                                    $sel = $c['id'] == $cid ? 'selected' : '';
+                                                                ?>
+                                                                    <option
+                                                                        value="<?= $c['id'] ?>"
+                                                                        data-cat="<?= $cat['id'] ?>"
+                                                                        <?= $sel ?>>
+                                                                        <?= htmlspecialchars($c['code'], ENT_QUOTES) ?>
+                                                                    </option>
+                                                                <?php endforeach; ?>
+                                                            <?php endforeach; ?>
+                                                        </select>
                                                     <?php endforeach; ?>
-                                                </select>
-                                            <?php endforeach; ?>
-
-                                            <button type="button" class="add-code-btn">+</button>
-                                            <button type="button" class="validate-btn">Valider</button>
-                                        <?php endif; ?>
-                                    </div>
-                                </td>
-                            <?php endforeach; ?>
-                        </tr>
+                                                    <button
+                                                        type="button"
+                                                        class="add-code-btn">+</button>
+                                                    <button
+                                                        type="button"
+                                                        class="validate-btn">Valider</button>
+                                                <?php else: ?>
+                                                    &ndash;
+                                                <?php endif; ?>
+                                            <?php endif; ?>
+                                        </div>
+                                    </td>
+                                <?php endforeach; ?>
+                            </tr>
+                        <?php endforeach; ?>
                     </tbody>
+                </table>
+                <button
+                    type="submit"
+                    class="btn btn-success">Soumettre mes souhaits</button>
+            </form>
+        </div>
 
-
-
-                <?php endforeach; ?>
-            </table>
-
-            <button type="submit">Enregistrer mes souhaits</button>
-        </form>
     <?php endif; ?>
 </div>
 
-
-
-
-
 <script>
     document.addEventListener('DOMContentLoaded', () => {
-        // Récupérer la liste des catégories actives
         const activeCats = new Set(<?= json_encode(array_column($categories, 'id'), JSON_NUMERIC_CHECK) ?>);
-
-        // On construira un template de <select> vierge à cloner
-        const anyCell = document.querySelector('.day-cell:not(.submitted)');
-        const templateSelect = anyCell ?
-            anyCell.querySelector('select.code-select').cloneNode(true) :
-            null;
-        if (templateSelect) templateSelect.value = '';
+        const tpl = document.getElementById('tpl-code-select').content.querySelector('select.code-select');
 
         function filterCodeSelects() {
             document.querySelectorAll('select.code-select').forEach(sel => {
@@ -360,79 +381,48 @@ require __DIR__ . '/includes/header.php';
         }
 
         document.body.addEventListener('click', e => {
-            // filtre par catégorie
             if (e.target.matches('.cat-btn')) {
                 const id = +e.target.dataset.cat;
-                e.target.classList.toggle('active') ?
-                    activeCats.add(id) :
-                    activeCats.delete(id);
+                e.target.classList.toggle('active') ? activeCats.add(id) : activeCats.delete(id);
                 return filterCodeSelects();
             }
-
-            // bouton '+'
             if (e.target.matches('.add-code-btn')) {
                 const cell = e.target.closest('.day-cell');
                 if (cell.classList.contains('submitted')) return;
-                const first = cell.querySelector('select.code-select');
-                if (!first) return;
-                const clone = first.cloneNode(true);
-                clone.value = '';
+                const clone = tpl.cloneNode(true);
+                clone.name = `codes[${cell.dataset.jour}][]`;
                 cell.insertBefore(clone, e.target);
                 return filterCodeSelects();
             }
-
-            // bouton 'Valider' -> passe en submitted
             if (e.target.matches('.validate-btn')) {
                 const cell = e.target.closest('.day-cell');
                 if (cell) cell.classList.add('submitted');
                 return;
             }
-
-            // bouton 'Modifier' -> repasse en saisie
             if (e.target.matches('.modify-btn')) {
                 const cell = e.target.closest('.day-cell');
-                if (!cell || !templateSelect) return;
-
-                // Retirer l'état 'submitted'
+                if (!cell) return;
                 cell.classList.remove('submitted');
-
-                // Vider tout contenu existant dans la cellule
-                cell.querySelectorAll('.submitted-code, select.code-select').forEach(el => el.remove());
-
-                // Recréer un seul <select> vierge
-                const sel = templateSelect.cloneNode(true);
+                // vider
+                cell.querySelectorAll('.submitted-code, select.code-select').forEach(x => x.remove());
+                // recréer un seul <select>
+                const sel = tpl.cloneNode(true);
                 sel.name = `codes[${cell.dataset.jour}][]`;
                 cell.insertBefore(sel, e.target);
-
-                // Réinsérer les boutons + et Valider (attention à l'ordre)
-                const btnPlus = document.createElement('button');
-                btnPlus.type = 'button';
-                btnPlus.className = 'add-code-btn';
-                btnPlus.textContent = '+';
-                cell.insertBefore(btnPlus, e.target);
-
-                const btnValide = document.createElement('button');
-                btnValide.type = 'button';
-                btnValide.className = 'validate-btn';
-                btnValide.textContent = 'Valider';
-                cell.insertBefore(btnValide, e.target);
-
-                // On remet le bouton Modifier en fin
-                e.target.remove(); // on supprime l'ancien
-                cell.appendChild(e.target); // on le remet tout à la fin
-
+                // add + et Valider
+                ['add-code-btn', 'validate-btn'].forEach(cls => {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = cls;
+                    b.textContent = cls === 'add-code-btn' ? '+' : 'Valider';
+                    cell.insertBefore(b, e.target);
+                });
                 return filterCodeSelects();
             }
         });
 
-        // premier filtrage
         filterCodeSelects();
     });
 </script>
 
-
-
-
-
-
-<?php require_once __DIR__ . '/includes/footer.php'; ?>
+<?php require __DIR__ . '/includes/footer.php'; ?>
