@@ -16,24 +16,23 @@ $userId    = $_SESSION['user_id'];
 $serviceId = $_SESSION['user_service_id'];
 $isChef    = $_SESSION['user_role'] === 'chefdecote';
 
-// 0.5) Préinitialisation pour éviter warnings
-$allCodes = [];
+// Préinitialisation\ n$allCodes = [];
 
-// 1) Charger les mois ouverts (français)
+// 1) Charger les mois ouverts
 $moisStmt = $pdo->prepare(
     'SELECT id, mois
        FROM mois_ouvert
-      WHERE id_service=? AND actif=1
+      WHERE id_service = ? AND actif = 1
       ORDER BY mois'
 );
 $moisStmt->execute([$serviceId]);
 $moisList = $moisStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// 2) Récupérer la liste des agents
+// 2) Charger les agents
 $agStmt = $pdo->prepare(
     'SELECT id, prenom, nom
        FROM user
-      WHERE id_service=? AND role IN ("agent","chefdecote","admin")
+      WHERE id_service = ? AND role IN ("agent","chefdecote","admin")
       ORDER BY nom, prenom'
 );
 $agStmt->execute([$serviceId]);
@@ -41,38 +40,71 @@ $agents = $agStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // 3) Sélection du mois et de la semaine
 $moisId    = (int)($_GET['mois_id'] ?? 0);
-$weekIndex = max(0, (int)($_GET['week']  ?? 0));
+$weekIndex = max(0, (int)($_GET['week'] ?? 0));
 
-// 4) POST de validation/refus
+// 4) POST validation/refus
 if (
     $_SERVER['REQUEST_METHOD'] === 'POST'
     && isset($_POST['souhait_id'], $_POST['action'])
     && $isChef
 ) {
+    $souhaitId     = (int)$_POST['souhait_id'];
     $nouveauStatut = $_POST['action'] === 'valider' ? 'validated' : 'refused';
-    $upd = $pdo->prepare("UPDATE souhaits SET statut = ? WHERE id = ?");
-    $upd->execute([$nouveauStatut, (int)$_POST['souhait_id']]);
-    header("Location: chef_souhaits.php?mois_id=$moisId&week=$weekIndex");
+
+    // mise à jour du statut
+    $upd = $pdo->prepare('UPDATE souhaits SET statut = ? WHERE id = ?');
+    $upd->execute([$nouveauStatut, $souhaitId]);
+
+    // si validé, ajouter heures sup
+    if ($nouveauStatut === 'validated') {
+        // récupérer user_id, code_id et date du souhait
+        $stmt = $pdo->prepare(
+            'SELECT user_id, code_id, jour FROM souhaits WHERE id = ?'
+        );
+        $stmt->execute([$souhaitId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!empty($row['code_id'])) {
+            // récupérer minutes directement depuis le code (colonne minutes)
+            $codeStmt = $pdo->prepare(
+                'SELECT heures_supplementaires_inc FROM code WHERE id = ?'
+            );
+            $codeStmt->execute([$row['code_id']]);
+            $minutes = (int)$codeStmt->fetchColumn();
+
+            if ($minutes > 0) {
+                // déterminer date à partir du jour et du mois
+                list($Y, $m) = explode('-', (new DateTimeImmutable($md['mois'] . '-01'))->format('Y-m')); // mois ouvert
+                $dateSaisie = sprintf('%04d-%02d-%02d 00:00:00', $row['jour'] >= 1 ? $Y : $Y, $m, $row['jour']);
+
+                $insHS = $pdo->prepare(
+                    'INSERT INTO heures_supplementaires
+                        (user_id, date_saisie, minutes, created_at, updated_at)
+                     VALUES (?, ?, ?, NOW(), NOW())'
+                );
+                $insHS->execute([$row['user_id'], $dateSaisie, $minutes]);
+            }
+        }
+    }
+
+    header("Location: chef_souhaits.php?mois_id={$moisId}&week={$weekIndex}");
     exit;
 }
 
-// 5) Préparer la grille si un mois est sélectionné
+// 5) Préparer la grille
 $weeks       = [];
 $joursOuvres = 0;
-$souhaits    = []; // souhaits[user_id][jour][]
-
+$souhaits    = [];
 if ($moisId > 0) {
     // a) mois & jours ouvrés
     $mstmt = $pdo->prepare(
-        'SELECT mois, jours_ouvres_par_semaine
-           FROM mois_ouvert
-          WHERE id = ?'
+        'SELECT mois, jours_ouvres_par_semaine FROM mois_ouvert WHERE id = ?'
     );
     $mstmt->execute([$moisId]);
     $md = $mstmt->fetch(PDO::FETCH_ASSOC);
-    list($Y, $m) = explode('-', $md['mois']);
-    $joursOuvres  = (int)$md['jours_ouvres_par_semaine'];
-    $daysInMonth = (int)(new DateTimeImmutable("$Y-$m-01"))->format('t');
+    list($Y, $m)           = explode('-', $md['mois']);
+    $joursOuvres          = (int)$md['jours_ouvres_par_semaine'];
+    $daysInMonth          = (int)(new DateTimeImmutable("$Y-$m-01"))->format('t');
 
     // b) découpage en semaines
     $tmp = [];
@@ -81,52 +113,58 @@ if ($moisId > 0) {
         $tmp[$dow] = $d;
         if ($dow === 7 || $d === $daysInMonth) {
             for ($i = 1; $i <= 7; $i++) {
-                if (!isset($tmp[$i])) {
-                    $tmp[$i] = null;
-                }
+                if (!isset($tmp[$i])) $tmp[$i] = null;
             }
             ksort($tmp);
             $weeks[] = $tmp;
             $tmp     = [];
         }
     }
-    if (!isset($weeks[$weekIndex])) {
-        $weekIndex = 0;
-    }
+    if (!isset($weeks[$weekIndex])) $weekIndex = 0;
     $week = $weeks[$weekIndex];
 
-    // c) charger tous les souhaits pour ce mois
+    // c) charger souhaits
     $sh = $pdo->prepare(
-        'SELECT id, user_id, jour, code_id, statut
-           FROM souhaits
-          WHERE mois_ouvert_id = ?'
+        'SELECT id, user_id, jour, code_id, statut FROM souhaits WHERE mois_ouvert_id = ?'
     );
     $sh->execute([$moisId]);
     foreach ($sh->fetchAll(PDO::FETCH_ASSOC) as $r) {
         $souhaits[$r['user_id']][$r['jour']][] = $r;
     }
 
-    // d) charger tous les codes pour retrouver code + label
+    // d) charger codes
     $cd = $pdo->prepare('SELECT id, code, label FROM code');
     $cd->execute();
     foreach ($cd->fetchAll(PDO::FETCH_ASSOC) as $c) {
-        $allCodes[$c['id']] = [
-            'code'  => $c['code'],
-            'label' => $c['label'],
-        ];
+        $allCodes[$c['id']] = ['code' => $c['code'], 'label' => $c['label']];
     }
 }
 
 // 6) Formatteurs FR
-$fmtMonth   = new IntlDateFormatter('fr_FR', IntlDateFormatter::NONE, IntlDateFormatter::NONE, 'Europe/Paris', IntlDateFormatter::GREGORIAN, 'MMMM yyyy');
-$fmtWeekday = new IntlDateFormatter('fr_FR', IntlDateFormatter::NONE, IntlDateFormatter::NONE, 'Europe/Paris', IntlDateFormatter::GREGORIAN, 'EEE');
+$fmtMonth   = new IntlDateFormatter(
+    'fr_FR',
+    IntlDateFormatter::NONE,
+    IntlDateFormatter::NONE,
+    'Europe/Paris',
+    IntlDateFormatter::GREGORIAN,
+    'MMMM yyyy'
+);
+$fmtWeekday = new IntlDateFormatter(
+    'fr_FR',
+    IntlDateFormatter::NONE,
+    IntlDateFormatter::NONE,
+    'Europe/Paris',
+    IntlDateFormatter::GREGORIAN,
+    'EEE'
+);
 
 $pageTitle = 'Validation des souhaits';
 require __DIR__ . '/includes/header.php';
 ?>
 
 <div class="container content">
-    <h2><?= htmlspecialchars($pageTitle) ?></h2>
+    <h2><?= htmlspecialchars($pageTitle, ENT_QUOTES) ?></h2>
+
 
     <!-- Sélecteur de mois -->
     <form method="get" class="form-container">
@@ -135,105 +173,68 @@ require __DIR__ . '/includes/header.php';
             <option value="">–</option>
             <?php foreach ($moisList as $mth): ?>
                 <option value="<?= $mth['id'] ?>" <?= $mth['id'] === $moisId ? 'selected' : '' ?>>
-                    <?= ucfirst($fmtMonth->format(new DateTimeImmutable($mth['mois'] . '-01'))) ?>
+                    <?= htmlspecialchars(ucfirst($fmtMonth->format(new DateTimeImmutable($mth['mois'] . '-01'))), ENT_QUOTES) ?>
                 </option>
             <?php endforeach; ?>
         </select>
     </form>
 
     <?php if ($moisId > 0): ?>
-        <!-- Navigation semaines -->
         <div class="week-nav">
             <?php if ($weekIndex > 0): ?>
-                <a href="?mois_id=<?= $moisId ?>&week=<?= $weekIndex - 1 ?>" class="btn btn-sm btn-primary">
-                    &larr; Sem. préc.
-                </a>
+                <a href="?mois_id=<?= $moisId ?>&week=<?= $weekIndex - 1 ?>" class="btn btn-sm btn-primary">&larr; Sem. préc.</a>
             <?php endif; ?>
-            <strong>
-                <?php
-                $start = reset($week);
-                $end   = end($week);
-                printf(
-                    "Sem. du %02d au %02d %s",
-                    $start,
-                    $end,
-                    ucfirst($fmtMonth->format(new DateTimeImmutable("$Y-$m-01")))
-                );
-                ?>
-            </strong>
+            <strong><?php $s = reset($week);
+                    $e = end($week);
+                    printf("Sem. du %02d au %02d %s", $s, $e, htmlspecialchars(ucfirst($fmtMonth->format(new DateTimeImmutable("$Y-$m-01"))), ENT_QUOTES)); ?></strong>
             <?php if (isset($weeks[$weekIndex + 1])): ?>
-                <a href="?mois_id=<?= $moisId ?>&week=<?= $weekIndex + 1 ?>" class="btn btn-sm btn-primary">
-                    Sem. suiv. &rarr;
-                </a>
+                <a href="?mois_id=<?= $moisId ?>&week=<?= $weekIndex + 1 ?>" class="btn btn-sm btn-primary">Sem. suiv. &rarr;</a>
             <?php endif; ?>
         </div>
 
-        <!-- Grille des souhaits -->
         <div class="planning-container">
             <table class="planning-all">
                 <thead>
                     <tr>
-                        <th>Agent</th>
-                        <?php foreach ($week as $d): ?>
-                            <th>
-                                <?= $d ?: '' ?><br>
-                                <?= $d ? ucfirst($fmtWeekday->format(new DateTimeImmutable("$Y-$m-" . sprintf('%02d', $d)))) : '' ?>
-                            </th>
-                        <?php endforeach; ?>
+                        <th>Agent</th><?php foreach ($week as $d): ?><th><?= $d ?: '' ?><br><?= $d ? htmlspecialchars(ucfirst($fmtWeekday->format(new DateTimeImmutable("$Y-$m-" . sprintf('%02d', $d)))), ENT_QUOTES) : '' ?></th><?php endforeach; ?>
                     </tr>
                 </thead>
                 <tbody>
-                    <?php foreach ($agents as $ag):
-                        $uid = $ag['id'];
-                    ?>
+                    <?php foreach ($agents as $ag): ?>
                         <tr>
                             <td><?= htmlspecialchars("{$ag['prenom']} {$ag['nom']}", ENT_QUOTES) ?></td>
                             <?php foreach ($week as $d): ?>
                                 <td>
                                     <?php
-                                    if (!$d) continue;
-                                    $dt = new DateTimeImmutable("$Y-$m-" . sprintf('%02d', $d));
-                                    if ((int)$dt->format('N') > $joursOuvres) continue;
-
-                                    $ents = $souhaits[$uid][$d] ?? [];
-                                    $stat = $ents[0]['statut'] ?? null;
-                                    $locked = in_array($stat, ['pending', 'validated', 'refused'], true);
+                                    // si jour valide et dans jours ouvrés
+                                    if ($d) {
+                                        $dt = new DateTimeImmutable(sprintf('%04d-%02d-%02d', $Y, $m, $d));
+                                        $dow = (int) $dt->format('N');
+                                        if ($dow <= $joursOuvres) {
+                                            $ents = $souhaits[$ag['id']][$d] ?? [];
+                                            $stat = $ents[0]['statut'] ?? null;
+                                            $locked = in_array($stat, ['pending', 'validated', 'refused'], true);
+                                            if ($locked) {
+                                                foreach ($ents as $e) {
+                                                    echo '<div class="submitted-code">';
+                                                    echo '<span class="code-text">' . htmlspecialchars($allCodes[$e['code_id']]['code'] ?? '-', ENT_QUOTES) . '</span>';
+                                                    echo '<span class="status ' . $e['statut'] . '">' . ($e['statut'] === 'pending' ? 'En attente' : ($e['statut'] === 'validated' ? 'Validé' : 'Refusé')) . '</span>';
+                                                    if ($isChef && $e['statut'] === 'pending') {
+                                                        echo '<form method="post" style="display:inline">'
+                                                            . '<input type="hidden" name="souhait_id" value="' . $e['id'] . '">'
+                                                            . '<button name="action" value="valider" class="btn btn-sm btn-success">Valider</button></form>';
+                                                        echo '<form method="post" style="display:inline">'
+                                                            . '<input type="hidden" name="souhait_id" value="' . $e['id'] . '">'
+                                                            . '<button name="action" value="refuser" class="btn btn-sm btn-danger">Refuser</button></form>';
+                                                    }
+                                                    echo '</div>';
+                                                }
+                                            } else {
+                                                echo '&ndash;';
+                                            }
+                                        }
+                                    }
                                     ?>
-                                    <div class="day-cell <?= $locked ? 'submitted' : '' ?>" data-jour="<?= $d ?>">
-                                        <?php if ($locked): ?>
-                                            <?php foreach ($ents as $e):
-                                                $cid       = (int)$e['code_id'];
-                                                $codeText  = $allCodes[$cid]['code']  ?? '-';
-                                                $labelText = $allCodes[$cid]['label'] ?? '';
-                                            ?>
-                                                <div class="submitted-code">
-                                                    <span class="code-text"><?= htmlspecialchars($codeText,  ENT_QUOTES) ?></span>
-                                                    <span class="label-text"><?= htmlspecialchars($labelText, ENT_QUOTES) ?></span>
-                                                    <span class="status <?= $e['statut'] ?>">
-                                                        <?= $e['statut'] === 'pending'
-                                                            ? 'En attente'
-                                                            : ($e['statut'] === 'validated' ? 'Validé' : 'Refusé') ?>
-                                                    </span>
-                                                    <?php if ($isChef && $e['statut'] === 'pending'): ?>
-                                                        <form method="post" style="display:inline">
-                                                            <input type="hidden" name="souhait_id" value="<?= $e['id'] ?>">
-                                                            <button name="action" value="valider" class="btn btn-sm btn-success">
-                                                                Valider
-                                                            </button>
-                                                        </form>
-                                                        <form method="post" style="display:inline">
-                                                            <input type="hidden" name="souhait_id" value="<?= $e['id'] ?>">
-                                                            <button name="action" value="refuser" class="btn btn-sm btn-danger">
-                                                                Refuser
-                                                            </button>
-                                                        </form>
-                                                    <?php endif; ?>
-                                                </div>
-                                            <?php endforeach; ?>
-                                        <?php else: ?>
-                                            &ndash;
-                                        <?php endif; ?>
-                                    </div>
                                 </td>
                             <?php endforeach; ?>
                         </tr>

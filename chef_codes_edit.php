@@ -17,24 +17,27 @@ if ($codeId <= 0) {
     exit;
 }
 
-$pageTitle = 'Éditer code';
+$maxCodeLen = 20; // correspond à la longueur du champ `code`
+$pageTitle = 'Éditer un code horaire';
 require_once __DIR__ . '/includes/header.php';
 
-$errors = [];
-$success = null;
+$errors    = [];
+$success   = null;
 $serviceId = $_SESSION['user_service_id'];
 
 // Charger les catégories pour le select
 $catsStmt = $pdo->prepare('SELECT id, name FROM code_category WHERE service_id = ? ORDER BY name');
 $catsStmt->execute([$serviceId]);
-$categories = $catsStmt->fetchAll();
+$categories = $catsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Charger les données du code
+// Charger les données du code (incluant HS minutes)
 $stmt = $pdo->prepare(
-    'SELECT category_id, code, label FROM code WHERE id = ?'
+    'SELECT category_id, code, label, heures_supplementaires_inc
+       FROM code
+      WHERE id = ?'
 );
 $stmt->execute([$codeId]);
-$code = $stmt->fetch();
+$code = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$code) {
     header('Location: chef_codes.php');
     exit;
@@ -45,6 +48,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $categoryId = (int)($_POST['category_id'] ?? 0);
     $codeKey    = trim($_POST['code_key'] ?? '');
     $codeLabel  = trim($_POST['code_label'] ?? '');
+    $hsMins     = (int)($_POST['hs_minutes'] ?? 0);
 
     // Validation
     if ($categoryId <= 0) {
@@ -55,6 +59,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if ($codeLabel === '') {
         $errors[] = 'La description du code est requise.';
+    }
+    if ($hsMins < 0) {
+        $errors[] = 'Le nombre de minutes HS doit être supérieur ou égal à 0.';
     }
 
     // Vérifier doublon (autre que ce code)
@@ -71,30 +78,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Mise à jour
     if (empty($errors)) {
         $upd = $pdo->prepare(
-            'UPDATE code SET category_id = ?, code = ?, label = ? WHERE id = ?'
+            'UPDATE code
+               SET category_id = ?, code = ?, label = ?, heures_supplementaires_inc = ?
+             WHERE id = ?'
         );
-        $upd->execute([$categoryId, $codeKey, $codeLabel, $codeId]);
+        $upd->execute([$categoryId, $codeKey, $codeLabel, $hsMins, $codeId]);
         $success = 'Code mis à jour avec succès.';
         // rafraîchir valeurs
         $code['category_id'] = $categoryId;
-        $code['code'] = $codeKey;
-        $code['label'] = $codeLabel;
+        $code['code']        = $codeKey;
+        $code['label']       = $codeLabel;
+        $code['heures_supplementaires_inc'] = $hsMins;
     }
 }
 ?>
 
 <div class="container content">
-    <h2><?= htmlspecialchars($pageTitle) ?></h2>
+    <h2><?= htmlspecialchars($pageTitle, ENT_QUOTES) ?></h2>
 
     <?php if ($errors): ?>
         <div class="errors">
-            <ul>
-                <?php foreach ($errors as $e): ?><li><?= htmlspecialchars($e) ?></li><?php endforeach; ?>
-            </ul>
+            <ul><?php foreach ($errors as $e): ?><li><?= htmlspecialchars($e, ENT_QUOTES) ?></li><?php endforeach; ?></ul>
         </div>
     <?php elseif ($success): ?>
         <div class="errors" style="background-color:#d4edda;color:#155724;border-color:#c3e6cb;">
-            <?= htmlspecialchars($success) ?></div>
+            <?= htmlspecialchars($success, ENT_QUOTES) ?></div>
     <?php endif; ?>
 
     <form method="post" class="form-container">
@@ -103,19 +111,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <option value="">-- Choisir --</option>
             <?php foreach ($categories as $cat): ?>
                 <option value="<?= $cat['id'] ?>" <?= $cat['id'] == $code['category_id'] ? 'selected' : '' ?>>
-                    <?= htmlspecialchars($cat['name']) ?>
+                    <?= htmlspecialchars($cat['name'], ENT_QUOTES) ?>
                 </option>
             <?php endforeach; ?>
         </select>
 
-        <label for="code_key">Clé du code</label>
-        <input type="text" id="code_key" name="code_key" value="<?= htmlspecialchars($code['code']) ?>" maxlength="<?= $maxCodeLength ?>" required>
+        <label for="code_key">Clé du code (max <?= $maxCodeLen ?> car.)</label>
+        <input type="text" id="code_key" name="code_key" maxlength="<?= $maxCodeLen ?>" value="<?= htmlspecialchars($code['code'], ENT_QUOTES) ?>" required>
 
         <label for="code_label">Description / Plage horaire</label>
-        <input type="text" id="code_label" name="code_label" value="<?= htmlspecialchars($code['label']) ?>" required>
+        <input type="text" id="code_label" name="code_label" value="<?= htmlspecialchars($code['label'], ENT_QUOTES) ?>" required>
 
-        <button type="submit" class="btn">Enregistrer les modifications</button>
-        <a href="chef_codes.php" class="btn">Retour</a>
+        <label for="hs_minutes">Minutes HS incluses (optionnel)</label>
+        <input type="number" id="hs_minutes" name="hs_minutes" min="0" step="1" value="<?= (int)$code['heures_supplementaires_inc'] ?>">
+        <small>Entrez en minutes (ex: 90 pour 1h30).</small>
+
+        <button type="submit" class="btn btn-success">Enregistrer les modifications</button>
+        <a href="chef_codes.php" class="btn btn-secondary">Retour</a>
     </form>
 </div>
 

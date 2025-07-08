@@ -30,7 +30,7 @@ $formatter = new IntlDateFormatter(
 
 // Prochains 6 mois
 $monthsAvailable = [];
-for ($i = 1; $i <= 6; $i++) {
+for ($i = 0; $i <= 6; $i++) {
     $dt = new DateTimeImmutable("first day of +{$i} month");
     $key = $dt->format('Y-m');
     $monthsAvailable[$key] = ucfirst($formatter->format($dt));
