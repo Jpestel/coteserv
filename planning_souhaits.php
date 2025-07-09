@@ -408,10 +408,9 @@ require __DIR__ . '/includes/header.php';
                                                         class="btn-submit-cell btn btn-sm btn-success">
                                                         Soumettre
                                                     </button>
-                                                <?php else: ?>
-                                                    &ndash;
+                                                    <?php else: ?>Côte de service non saisie<?php endif; ?>
+
                                                 <?php endif; ?>
-                                            <?php endif; ?>
 
                                         </div>
                                     </td>
