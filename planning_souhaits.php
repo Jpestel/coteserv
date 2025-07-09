@@ -73,6 +73,20 @@ foreach ($allCodes as $c) {
 $selectedMois = (int)($_GET['mois_id'] ?? 0);
 $weekIndex    = max(0, (int)($_GET['week'] ?? 0));
 
+// 4a) Calcul du solde d'heures supplémentaires de l'agent connecté
+$hsStmt = $pdo->prepare("
+    SELECT COALESCE(SUM(minutes), 0) AS total_min
+      FROM heures_supplementaires
+     WHERE user_id = ?
+");
+$hsStmt->execute([$userId]);
+$totalMin = (int)$hsStmt->fetchColumn();
+
+// Conversion en heures et minutes
+$hsHours = intdiv($totalMin, 60);
+$hsMins  = $totalMin % 60;
+
+
 // 5) Traitement POST (modifier ou soumettre)
 $success = '';
 $errors  = [];
@@ -215,18 +229,40 @@ require __DIR__ . '/includes/header.php';
         </div>
     <?php endif; ?>
 
-    <!-- Sélecteur de mois -->
-    <form method="get" class="form-container">
-        <label for="mois_id">Choisir un mois</label>
-        <select id="mois_id" name="mois_id" onchange="this.form.submit()">
-            <option value="">–</option>
-            <?php foreach ($moisList as $mth): ?>
-                <option value="<?= $mth['id'] ?>" <?= $mth['id'] == $selectedMois ? ' selected' : '' ?>>
-                    <?= ucfirst($monthF->format(new DateTimeImmutable($mth['mois'] . '-01'))) ?>
-                </option>
-            <?php endforeach; ?>
-        </select>
-    </form>
+    <!-- Sélecteur de mois et solde heures supp -->
+    <div class="controls" style="display: flex; align-items: center;">
+
+        <!-- Sélecteur de mois -->
+        <form method="get" class="form-container">
+            <label for="mois_id">Choisir un mois</label><br>
+            <select id="mois_id" name="mois_id" onchange="this.form.submit()">
+                <option value="">–</option>
+                <?php foreach ($moisList as $mth): ?>
+                    <option value="<?= $mth['id'] ?>"
+                        <?= $mth['id'] == $selectedMois ? ' selected' : '' ?>>
+                        <?= ucfirst($monthF->format(new DateTimeImmutable($mth['mois'] . '-01'))) ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </form>
+
+        <!-- Solde des heures supplémentaires -->
+        <div
+            class="overtime-balance"
+            style="
+            margin-left: auto;
+            margin-right: 100px;
+            padding: 0.5rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        ">
+            <strong>Solde heures sup' :</strong><br>
+            <?= $hsHours ?>h <?= sprintf('%02d', $hsMins) ?>m
+        </div>
+
+    </div>
+
+
 
     <?php if ($selectedMois): ?>
         <!-- Navigation semaine -->
