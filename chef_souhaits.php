@@ -72,17 +72,17 @@ if (
             $codeStmt->execute([$row['code_id']]);
             $minutes = (int)$codeStmt->fetchColumn();
 
-            if ($minutes > 0) {
-                // déterminer date à partir du jour et du mois
-                list($Y, $m) = explode('-', (new DateTimeImmutable($md['mois'] . '-01'))->format('Y-m')); // mois ouvert
-                $dateSaisie = sprintf('%04d-%02d-%02d 00:00:00', $row['jour'] >= 1 ? $Y : $Y, $m, $row['jour']);
-
+            if ($minutes !== 0) {
+                // INSERT INTO heures_supplementaires …
                 $insHS = $pdo->prepare(
                     'INSERT INTO heures_supplementaires
-                        (user_id, date_saisie, minutes, created_at, updated_at)
-                     VALUES (?, ?, ?, NOW(), NOW())'
+            (user_id, date_saisie, minutes, created_at, updated_at)
+         VALUES (?, NOW(), ?, NOW(), NOW())'
                 );
-                $insHS->execute([$row['user_id'], $dateSaisie, $minutes]);
+                $insHS->execute([
+                    $row['user_id'],
+                    $minutes
+                ]);
             }
         }
     }
