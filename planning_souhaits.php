@@ -240,6 +240,12 @@ require __DIR__ . '/includes/header.php';
 
         <!-- Filtre catégories -->
         <div class="category-filter">
+            <button type="button"
+                id="clear-filters"
+                class="btn btn-sm btn-secondary"
+                style="margin-right:8px;">
+                Tout décocher
+            </button>
             <?php foreach ($categories as $cat): ?>
                 <button type="button" class="cat-btn active" data-cat="<?= $cat['id'] ?>"><?= htmlspecialchars($cat['name'], ENT_QUOTES) ?></button>
             <?php endforeach; ?>
@@ -403,12 +409,27 @@ require __DIR__ . '/includes/header.php';
         }
 
         document.body.addEventListener('click', e => {
-            if (e.target.matches('.cat-btn')) {
-                const id = +e.target.dataset.cat;
-                if (e.target.classList.toggle('active')) activeCats.add(id);
-                else activeCats.delete(id);
+            // 1) Tout décocher
+            if (e.target.matches('#clear-filters')) {
+                activeCats.clear();
+                document.querySelectorAll('.cat-btn').forEach(btn =>
+                    btn.classList.remove('active')
+                );
                 return filter();
             }
+
+            // 2) Sélection/dé-sélection individualle
+            if (e.target.matches('.cat-btn')) {
+                const id = +e.target.dataset.cat;
+                if (e.target.classList.toggle('active')) {
+                    activeCats.add(id);
+                } else {
+                    activeCats.delete(id);
+                }
+                return filter();
+            }
+
+            // 3) Ton handler pour add-code-btn reste inchangé
             if (e.target.matches('.add-code-btn')) {
                 const cell = e.target.closest('.day-cell');
                 if (cell.classList.contains('submitted')) return;
