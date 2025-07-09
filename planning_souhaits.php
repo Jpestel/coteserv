@@ -139,7 +139,36 @@ if ($selectedMois) {
         $day = (int)(new DateTimeImmutable($evt['date']))->format('j');
         $eventsByDay[$day][] = $evt['titre'];
     }
+    // Charger jours fériés par défaut
+    $defStmt = $pdo->prepare("
+        SELECT jour
+        FROM jours_feries_defaut
+        WHERE mois = ?
+    ");
+    $defStmt->execute([(int)$m]);
+    $feriesDef = $defStmt->fetchAll(PDO::FETCH_COLUMN);
 
+    // Charger overrides
+    $ovStmt = $pdo->prepare("
+        SELECT date, is_ferie
+        FROM jours_feries_override
+        WHERE mois_ouvert_id = ?
+    ");
+    $ovStmt->execute([$selectedMois]);
+    $overrides = $ovStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Construire un index des dates fériées (format YYYY-MM-DD)
+    $feries = [];
+    foreach ($feriesDef as $jour) {
+        $feries[sprintf('%s-%02d', $md['mois'], $jour)] = true;
+    }
+    foreach ($overrides as $ov) {
+        if ($ov['is_ferie']) {
+            $feries[$ov['date']] = true;
+        } else {
+            unset($feries[$ov['date']]);
+        }
+    }
     $tmp = [];
     for ($d = 1; $d <= $daysInMonth; $d++) {
         $dow = (int)(new DateTimeImmutable("$Y-$m-" . sprintf('%02d', $d)))->format('N');
@@ -220,7 +249,7 @@ require __DIR__ . '/includes/header.php';
         <template id="tpl-code-select">
             <select class="code-select">
                 <option value="">-</option><?php foreach ($categories as $cat): foreach ($codesByCat[$cat['id']] ?? [] as $c): ?><option value="<?= $c['id'] ?>" data-cat="<?= $cat['id'] ?>"><?= htmlspecialchars($c['code'], ENT_QUOTES) ?></option><?php endforeach;
-                                                                                                                                                                                                                                    endforeach; ?>
+                                                                                                                                                                                                                                                endforeach; ?>
             </select>
         </template>
 
@@ -232,43 +261,120 @@ require __DIR__ . '/includes/header.php';
                     <thead>
                         <tr>
                             <th>Agent</th>
-                            <?php foreach ($week as $d): ?><th><?php if (!empty($eventsByDay[$d])): ?><ul class="evt-list"><?php foreach ($eventsByDay[$d] as $t): ?><li class="evt-item"><?= htmlspecialchars($t, ENT_QUOTES) ?></li><?php endforeach; ?></ul><?php endif; ?><?= $d ?: '' ?><br><?= $d ? ucfirst($wkdayF->format(new DateTimeImmutable("$Y-$m-" . sprintf('%02d', $d)))) : '' ?></th><?php endforeach; ?>
+                            <?php foreach ($week as $d): ?>
+                                <?php if ($d): ?>
+                                    <?php $dateStr = sprintf('%s-%02d', $md['mois'], $d); ?>
+                                    <th>
+                                        <?php if (isset($feries[$dateStr])): ?>
+                                            <ul class="evt-list">
+                                                <li class="evt-item"><strong>FERIÉ</strong></li>
+                                            </ul>
+                                        <?php endif; ?>
+                                        <?php if (!empty($eventsByDay[$d])): ?>
+                                            <ul class="evt-list">
+                                                <?php foreach ($eventsByDay[$d] as $t): ?>
+                                                    <li class="evt-item"><?= htmlspecialchars($t, ENT_QUOTES) ?></li>
+                                                <?php endforeach; ?>
+                                            </ul>
+                                        <?php endif; ?>
+                                        <?= $d ?><br>
+                                        <?= ucfirst($wkdayF->format(new DateTimeImmutable("$Y-$m-" . sprintf('%02d', $d)))) ?>
+                                    </th>
+                                <?php else: ?>
+                                    <th></th>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
                         </tr>
                     </thead>
+
                     <tbody>
                         <?php foreach ($agents as $ag): $uid = $ag['id']; ?>
                             <tr>
                                 <td><?= htmlspecialchars($ag['prenom'] . ' ' . $ag['nom'], ENT_QUOTES) ?></td>
                                 <?php foreach ($week as $d): ?>
                                     <td>
-                                        <?php if (!$d) continue;
+                                        <?php
+                                        if (!$d) continue;
                                         $dt = new DateTimeImmutable("$Y-$m-" . sprintf('%02d', $d));
                                         if ((int)$dt->format('N') > $joursOuvres) continue;
-                                        $ents = $souhaits[$uid][$d] ?? [];
-                                        $stat = $ents[0]['statut'] ?? null;
-                                        $locked = in_array($stat, ['pending', 'validated', 'refused'], true); ?>
+                                        // Construire la chaîne de date pour tester le jour férié
+                                        $dateStr = sprintf('%s-%02d', $md['mois'], $d);
+
+                                        // Récupérer les souhaits existants
+                                        $ents   = $souhaits[$uid][$d] ?? [];
+                                        $stat   = $ents[0]['statut'] ?? null;
+                                        $locked = in_array($stat, ['pending', 'validated', 'refused'], true);
+                                        ?>
                                         <div class="day-cell <?= $locked ? 'submitted' : '' ?>" data-jour="<?= $d ?>">
-                                            <?php if ($locked): ?>
-                                                <?php foreach ($ents as $e): $lbl = '-';
-                                                    foreach ($allCodes as $c) if ($c['id'] == $e['code_id']) {
-                                                        $lbl = $c['code'];
-                                                        break;
-                                                    } ?>
+
+                                            <?php if (isset($feries[$dateStr])): ?>
+                                                <!-- Jour férié : même style qu'un événement -->
+                                                <ul class="evt-list">
+                                                    <li class="evt-item"><strong>FERIÉ</strong></li>
+                                                </ul>
+
+                                            <?php elseif ($locked): ?>
+                                                <!-- Codes déjà soumis -->
+                                                <?php foreach ($ents as $e):
+                                                    $lbl = '-';
+                                                    foreach ($allCodes as $c) {
+                                                        if ($c['id'] == $e['code_id']) {
+                                                            $lbl = $c['code'];
+                                                            break;
+                                                        }
+                                                    }
+                                                ?>
                                                     <div class="submitted-code">
                                                         <span class="code-text"><?= htmlspecialchars($lbl, ENT_QUOTES) ?></span>
-                                                        <span class="status <?= $e['statut'] ?>"><?= $e['statut'] === 'pending' ? 'En attente' : ($e['statut'] === 'validated' ? 'Validé' : 'Refusé') ?></span>
+                                                        <span class="status <?= $e['statut'] ?>">
+                                                            <?= $e['statut'] === 'pending'
+                                                                ? 'En attente'
+                                                                : ($e['statut'] === 'validated' ? 'Validé' : 'Refusé') ?>
+                                                        </span>
                                                     </div>
                                                 <?php endforeach; ?>
-                                                <?php if ($uid === $userId): ?><button type="submit" name="modify_jour" value="<?= $d ?>" class="btn btn-sm btn-warning">Modifier</button><?php endif; ?>
-                                            <?php else: ?>
-                                                <?php if ($uid === $userId): foreach ($souhaits[$uid][$d] ?? [''] as $cid): ?><select name="codes[<?= $d ?>][]" class="code-select">
-                                                            <option value="">-</option><?php foreach ($categories as $cat): foreach ($codesByCat[$cat['id']] ?? [] as $c): ?><option value="<?= $c['id'] ?>" data-cat="<?= $cat['id'] ?>" <?= ($c['id'] == $cid) ? ' selected' : '' ?>><?= htmlspecialchars($c['code'], ENT_QUOTES) ?></option><?php endforeach;
-                                                                                                                                                                                                                                                                                                                        endforeach; ?>
-                                                        </select><?php endforeach; ?><button type="button" class="add-code-btn">+</button><button type="submit" name="submit_jour" value="<?= $d ?>" class="btn-submit-cell btn btn-sm btn-success">Soumettre</button><?php else: ?>&ndash;<?php endif; ?>
+                                                <?php if ($uid === $userId): ?>
+                                                    <button type="submit"
+                                                        name="modify_jour"
+                                                        value="<?= $d ?>"
+                                                        class="btn btn-sm btn-warning">
+                                                        Modifier
+                                                    </button>
                                                 <?php endif; ?>
+
+                                            <?php else: ?>
+                                                <!-- Cellule de saisie pour l'agent -->
+                                                <?php if ($uid === $userId): ?>
+                                                    <?php foreach ($souhaits[$uid][$d] ?? [''] as $cid): ?>
+                                                        <select name="codes[<?= $d ?>][]" class="code-select">
+                                                            <option value="">-</option>
+                                                            <?php foreach ($categories as $cat): ?>
+                                                                <?php foreach ($codesByCat[$cat['id']] ?? [] as $c): ?>
+                                                                    <option value="<?= $c['id'] ?>"
+                                                                        data-cat="<?= $cat['id'] ?>"
+                                                                        <?= ($c['id'] == $cid) ? ' selected' : '' ?>>
+                                                                        <?= htmlspecialchars($c['code'], ENT_QUOTES) ?>
+                                                                    </option>
+                                                                <?php endforeach; ?>
+                                                            <?php endforeach; ?>
+                                                        </select>
+                                                    <?php endforeach; ?>
+                                                    <button type="button" class="add-code-btn">+</button>
+                                                    <button type="submit"
+                                                        name="submit_jour"
+                                                        value="<?= $d ?>"
+                                                        class="btn-submit-cell btn btn-sm btn-success">
+                                                        Soumettre
+                                                    </button>
+                                                <?php else: ?>
+                                                    &ndash;
+                                                <?php endif; ?>
+                                            <?php endif; ?>
+
                                         </div>
                                     </td>
                                 <?php endforeach; ?>
+
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
