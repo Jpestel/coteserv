@@ -42,91 +42,172 @@ $agents = $agStmt->fetchAll(PDO::FETCH_ASSOC);
 $moisId    = (int)($_GET['mois_id'] ?? 0);
 $weekIndex = max(0, (int)($_GET['week'] ?? 0));
 
-// 4) POST validation/refus
-if (
-    $_SERVER['REQUEST_METHOD'] === 'POST'
-    && isset($_POST['souhait_id'], $_POST['action'])
-    && $isChef
-) {
-    $souhaitId     = (int)$_POST['souhait_id'];
-    $nouveauStatut = $_POST['action'] === 'valider' ? 'validated' : 'refused';
+// 4) POST validation/refus ou Valider tout
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isChef) {
 
-    // mise à jour du statut
-    $upd = $pdo->prepare('UPDATE souhaits SET statut = ? WHERE id = ?');
-    $upd->execute([$nouveauStatut, $souhaitId]);
+    // 4a) Valider tous les souhaits d’un agent
+    if (isset($_POST['validate_all_user'])) {
+        $userToVal = (int)$_POST['validate_all_user'];
 
-    // si validé, ajouter heures sup
-    if ($nouveauStatut === 'validated') {
-        // récupérer user_id, code_id et jour du souhait
-        $stmt = $pdo->prepare(
-            'SELECT user_id, code_id, jour 
-               FROM souhaits 
-              WHERE id = ?'
+        // 1) Récupérer tous les souhaits pendants pour cet agent et ce mois
+        $getPend = $pdo->prepare(
+            "SELECT id FROM souhaits
+             WHERE user_id = ?
+               AND mois_ouvert_id = ?
+               AND statut = 'pending'"
         );
-        $stmt->execute([$souhaitId]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $getPend->execute([$userToVal, $moisId]);
+        $pendings = $getPend->fetchAll(PDO::FETCH_COLUMN);
 
-        if (!empty($row['code_id'])) {
-            // récupérer l’incrément d’heures sup
-            $codeStmt = $pdo->prepare(
-                'SELECT heures_supplementaires_inc 
-                   FROM code 
-                  WHERE id = ?'
+        // 2) Pour chaque souhait, appliquer la logique “valider”
+        foreach ($pendings as $sid) {
+            // a) passage du statut
+            $upd = $pdo->prepare(
+                "UPDATE souhaits SET statut = 'validated' WHERE id = ?"
             );
-            $codeStmt->execute([$row['code_id']]);
-            $minutes = (int)$codeStmt->fetchColumn();
+            $upd->execute([$sid]);
 
-            if ($minutes !== 0) {
-                // charger $md['mois'] pour construire la date
-                $mo = $pdo->prepare(
-                    'SELECT mois 
-                       FROM mois_ouvert 
-                      WHERE id = ?'
+            // b) récupération et insertion des HS si besoin
+            $r = $pdo->prepare(
+                'SELECT user_id, code_id, jour FROM souhaits WHERE id = ?'
+            );
+            $r->execute([$sid]);
+            $row = $r->fetch(PDO::FETCH_ASSOC);
+
+            if (!empty($row['code_id'])) {
+                $cst = $pdo->prepare(
+                    'SELECT heures_supplementaires_inc FROM code WHERE id = ?'
                 );
-                $mo->execute([$moisId]);
-                $md = $mo->fetch(PDO::FETCH_ASSOC);
+                $cst->execute([$row['code_id']]);
+                $minutes = (int)$cst->fetchColumn();
 
-                // construire la date du jour d'heures sup (YYYY-MM-DD 00:00:00)
-                $dateOvertime = sprintf(
-                    '%s-%02d 00:00:00',
-                    $md['mois'],
-                    $row['jour']
-                );
-
-                // anti-doublon : on ne réinsère pas si la même ligne existe
-                $chkHS = $pdo->prepare(
-                    'SELECT COUNT(*) 
-                       FROM heures_supplementaires
-                      WHERE user_id    = ?
-                        AND date_saisie = ?
-                        AND minutes     = ?'
-                );
-                $chkHS->execute([
-                    $row['user_id'],
-                    $dateOvertime,
-                    $minutes,
-                ]);
-
-                if ($chkHS->fetchColumn() == 0) {
-                    // insertion unique
-                    $insHS = $pdo->prepare(
-                        'INSERT INTO heures_supplementaires
-                            (user_id, date_saisie, minutes, created_at, updated_at)
-                         VALUES (?, ?, ?, NOW(), NOW())'
+                if ($minutes !== 0) {
+                    // charger mois pour date
+                    $mo = $pdo->prepare(
+                        'SELECT mois FROM mois_ouvert WHERE id = ?'
                     );
-                    $insHS->execute([
+                    $mo->execute([$moisId]);
+                    $md = $mo->fetch(PDO::FETCH_ASSOC);
+
+                    $dateOvertime = sprintf(
+                        '%s-%02d 00:00:00',
+                        $md['mois'],
+                        $row['jour']
+                    );
+
+                    // anti-doublon HS
+                    $chk = $pdo->prepare(
+                        'SELECT COUNT(*) FROM heures_supplementaires
+                         WHERE user_id = ? AND date_saisie = ? AND minutes = ?'
+                    );
+                    $chk->execute([
                         $row['user_id'],
                         $dateOvertime,
                         $minutes,
                     ]);
+
+                    if ($chk->fetchColumn() == 0) {
+                        $ins = $pdo->prepare(
+                            'INSERT INTO heures_supplementaires
+                              (user_id,date_saisie,minutes,created_at,updated_at)
+                             VALUES (?, ?, ?, NOW(), NOW())'
+                        );
+                        $ins->execute([
+                            $row['user_id'],
+                            $dateOvertime,
+                            $minutes,
+                        ]);
+                    }
                 }
             }
         }
+
+        header("Location: chef_souhaits.php?mois_id={$moisId}&week={$weekIndex}");
+        exit;
     }
 
-    header("Location: chef_souhaits.php?mois_id={$moisId}&week={$weekIndex}");
-    exit;
+    // 4b) Validation/refus individuel
+    if (isset($_POST['souhait_id'], $_POST['action'])) {
+        $souhaitId     = (int)$_POST['souhait_id'];
+        $nouveauStatut = $_POST['action'] === 'valider' ? 'validated' : 'refused';
+
+        // mise à jour du statut
+        $upd = $pdo->prepare('UPDATE souhaits SET statut = ? WHERE id = ?');
+        $upd->execute([$nouveauStatut, $souhaitId]);
+
+        // si validé, ajouter heures sup
+        if ($nouveauStatut === 'validated') {
+            // récupérer user_id, code_id et jour du souhait
+            $stmt = $pdo->prepare(
+                'SELECT user_id, code_id, jour 
+                   FROM souhaits 
+                  WHERE id = ?'
+            );
+            $stmt->execute([$souhaitId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!empty($row['code_id'])) {
+                // récupérer l’incrément d’heures sup
+                $codeStmt = $pdo->prepare(
+                    'SELECT heures_supplementaires_inc 
+                       FROM code 
+                      WHERE id = ?'
+                );
+                $codeStmt->execute([$row['code_id']]);
+                $minutes = (int)$codeStmt->fetchColumn();
+
+                if ($minutes !== 0) {
+                    // charger $md['mois'] pour construire la date
+                    $mo = $pdo->prepare(
+                        'SELECT mois 
+                           FROM mois_ouvert 
+                          WHERE id = ?'
+                    );
+                    $mo->execute([$moisId]);
+                    $md = $mo->fetch(PDO::FETCH_ASSOC);
+
+                    // construire la date du jour d'heures sup
+                    $dateOvertime = sprintf(
+                        '%s-%02d 00:00:00',
+                        $md['mois'],
+                        $row['jour']
+                    );
+
+                    // anti-doublon : on n’insère pas si déjà présent
+                    $chkHS = $pdo->prepare(
+                        'SELECT COUNT(*) 
+                           FROM heures_supplementaires
+                          WHERE user_id    = ?
+                            AND date_saisie = ?
+                            AND minutes     = ?'
+                    );
+                    $chkHS->execute([
+                        $row['user_id'],
+                        $dateOvertime,
+                        $minutes,
+                    ]);
+
+                    if ($chkHS->fetchColumn() == 0) {
+                        $insHS = $pdo->prepare(
+                            'INSERT INTO heures_supplementaires
+                                (user_id, date_saisie, minutes, created_at, updated_at)
+                             VALUES (?, ?, ?, NOW(), NOW())'
+                        );
+                        $insHS->execute([
+                            $row['user_id'],
+                            $dateOvertime,
+                            $minutes,
+                        ]);
+                    }
+                }
+            }
+        }
+
+        header("Location: chef_souhaits.php?mois_id={$moisId}&week={$weekIndex}");
+        exit;
+    }
 }
+
 
 
 // 5) Préparer la grille
@@ -240,37 +321,69 @@ require __DIR__ . '/includes/header.php';
                 <tbody>
                     <?php foreach ($agents as $ag): ?>
                         <tr>
-                            <td><?= htmlspecialchars("{$ag['prenom']} {$ag['nom']}", ENT_QUOTES) ?></td>
+                            <!-- Colonne Nom / Prénom + bouton Valider tout -->
+                            <td>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <?= htmlspecialchars("{$ag['prenom']} {$ag['nom']}", ENT_QUOTES) ?>
+
+                                    <?php if ($isChef): ?>
+                                        <form method="post" style="display:inline; margin-top:4px;">
+                                            <input type="hidden" name="validate_all_user" value="<?= $ag['id'] ?>">
+                                            <button type="submit" class="btn btn-sm btn-success">
+                                                Valider tout
+                                            </button>
+                                        </form>
+                                    <?php endif; ?>
+                                </div>
+                            </td>
+
+                            <!-- Colonnes des jours de la semaine -->
                             <?php foreach ($week as $d): ?>
                                 <td>
                                     <?php
-                                    // si jour valide et dans jours ouvrés
-                                    if ($d) {
-                                        $dt = new DateTimeImmutable(sprintf('%04d-%02d-%02d', $Y, $m, $d));
-                                        $dow = (int) $dt->format('N');
-                                        if ($dow <= $joursOuvres) {
-                                            $ents = $souhaits[$ag['id']][$d] ?? [];
-                                            $stat = $ents[0]['statut'] ?? null;
-                                            $locked = in_array($stat, ['pending', 'validated', 'refused'], true);
-                                            if ($locked) {
-                                                foreach ($ents as $e) {
-                                                    echo '<div class="submitted-code">';
-                                                    echo '<span class="code-text">' . htmlspecialchars($allCodes[$e['code_id']]['code'] ?? '-', ENT_QUOTES) . '</span>';
-                                                    echo '<span class="status ' . $e['statut'] . '">' . ($e['statut'] === 'pending' ? 'En attente' : ($e['statut'] === 'validated' ? 'Validé' : 'Refusé')) . '</span>';
-                                                    if ($isChef && $e['statut'] === 'pending') {
-                                                        echo '<form method="post" style="display:inline">'
-                                                            . '<input type="hidden" name="souhait_id" value="' . $e['id'] . '">'
-                                                            . '<button name="action" value="valider" class="btn btn-sm btn-success">Valider</button></form>';
-                                                        echo '<form method="post" style="display:inline">'
-                                                            . '<input type="hidden" name="souhait_id" value="' . $e['id'] . '">'
-                                                            . '<button name="action" value="refuser" class="btn btn-sm btn-danger">Refuser</button></form>';
-                                                    }
-                                                    echo '</div>';
-                                                }
-                                            } else {
-                                                echo '&ndash;';
+                                    if (!$d) {
+                                        continue;
+                                    }
+                                    $dt  = new DateTimeImmutable(sprintf('%04d-%02d-%02d', $Y, $m, $d));
+                                    $dow = (int)$dt->format('N');
+                                    if ($dow > $joursOuvres) {
+                                        continue;
+                                    }
+
+                                    $ents   = $souhaits[$ag['id']][$d] ?? [];
+                                    $stat   = $ents[0]['statut'] ?? null;
+                                    $locked = in_array($stat, ['pending', 'validated', 'refused'], true);
+
+                                    if ($locked) {
+                                        foreach ($ents as $e) {
+                                            echo '<div class="submitted-code">';
+                                            echo '<span class="code-text">'
+                                                . htmlspecialchars($allCodes[$e['code_id']]['code'] ?? '-', ENT_QUOTES)
+                                                . '</span>';
+                                            echo '<span class="status ' . $e['statut'] . '">'
+                                                . ($e['statut'] === 'pending'   ? 'En attente'
+                                                    : ($e['statut'] === 'validated' ? 'Validé'
+                                                        : 'Refusé'))
+                                                . '</span>';
+
+                                            if ($isChef && $e['statut'] === 'pending') {
+                                                // bouton Valider
+                                                echo '<form method="post" style="display:inline">'
+                                                    . '<input type="hidden" name="souhait_id" value="' . $e['id'] . '">'
+                                                    . '<button name="action" value="valider" class="btn btn-sm btn-success">Valider</button>'
+                                                    . '</form>';
+
+                                                // bouton Refuser
+                                                echo '<form method="post" style="display:inline">'
+                                                    . '<input type="hidden" name="souhait_id" value="' . $e['id'] . '">'
+                                                    . '<button name="action" value="refuser" class="btn btn-sm btn-danger">Refuser</button>'
+                                                    . '</form>';
                                             }
+
+                                            echo '</div>';
                                         }
+                                    } else {
+                                        echo '&ndash;';
                                     }
                                     ?>
                                 </td>
@@ -278,6 +391,7 @@ require __DIR__ . '/includes/header.php';
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
+
             </table>
         </div>
     <?php endif; ?>
