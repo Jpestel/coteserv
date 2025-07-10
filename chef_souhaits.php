@@ -37,6 +37,19 @@ $agStmt = $pdo->prepare(
 );
 $agStmt->execute([$serviceId]);
 $agents = $agStmt->fetchAll(PDO::FETCH_ASSOC);
+// 2a) Calcul du solde d’heures supp pour chaque agent
+$balances = [];
+foreach ($agents as $ag) {
+    $balStmt = $pdo->prepare(
+        'SELECT COALESCE(SUM(minutes), 0) FROM heures_supplementaires WHERE user_id = ?'
+    );
+    $balStmt->execute([$ag['id']]);
+    $totMin = (int)$balStmt->fetchColumn();
+    $balances[$ag['id']] = [
+        'h' => intdiv($totMin, 60),
+        'm' => $totMin % 60,
+    ];
+}
 
 // 3) Sélection du mois et de la semaine
 $moisId    = (int)($_GET['mois_id'] ?? 0);
@@ -283,8 +296,6 @@ require __DIR__ . '/includes/header.php';
 
 <div class="container content">
     <h2><?= htmlspecialchars($pageTitle, ENT_QUOTES) ?></h2>
-
-
     <!-- Sélecteur de mois -->
     <form method="get" class="form-container">
         <label for="mois_id">Mois ouvert</label>
@@ -323,17 +334,24 @@ require __DIR__ . '/includes/header.php';
                         <tr>
                             <!-- Colonne Nom / Prénom + bouton Valider tout -->
                             <td>
-                                <div style="display: flex; align-items: center; gap: 8px;">
-                                    <?= htmlspecialchars("{$ag['prenom']} {$ag['nom']}", ENT_QUOTES) ?>
+                                <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 4px;">
+                                    <div style="display: flex; align-items: center; gap: 8px;">
+                                        <!-- Nom de l'agent -->
+                                        <span><?= htmlspecialchars("{$ag['prenom']} {$ag['nom']}", ENT_QUOTES) ?></span>
 
-                                    <?php if ($isChef): ?>
-                                        <form method="post" style="display:inline; margin-top:4px;">
-                                            <input type="hidden" name="validate_all_user" value="<?= $ag['id'] ?>">
-                                            <button type="submit" class="btn btn-sm btn-success">
-                                                Valider tout
-                                            </button>
-                                        </form>
-                                    <?php endif; ?>
+                                        <!-- Bouton Valider tout -->
+                                        <?php if ($isChef): ?>
+                                            <form method="post" style="margin: 0;">
+                                                <input type="hidden" name="validate_all_user" value="<?= $ag['id'] ?>">
+                                                <button type="submit" class="btn btn-sm btn-success">Valider tout</button>
+                                            </form>
+                                        <?php endif; ?>
+                                    </div>
+
+                                    <!-- Solde des heures supplémentaires -->
+                                    <div style="font-size: 0.85em; color: #555;">
+                                        Solde HS : <?= $balances[$ag['id']]['h'] ?>h <?= sprintf('%02d', $balances[$ag['id']]['m']) ?>m
+                                    </div>
                                 </div>
                             </td>
 
