@@ -188,17 +188,19 @@ if ($selectedMois) {
 
     $eventsByDay = [];
     $evtStmt = $pdo->prepare(
-        "SELECT `date`, titre
-         FROM evenements
-        WHERE service_id = ?
-          AND YEAR(`date`)  = ?
-          AND MONTH(`date`) = ?"
+        "SELECT `date`, titre, description
+     FROM evenements
+    WHERE service_id = ?
+      AND YEAR(`date`)  = ?
+      AND MONTH(`date`) = ?"
     );
+
     $evtStmt->execute([$serviceId, $Y, $m]);
     foreach ($evtStmt->fetchAll(PDO::FETCH_ASSOC) as $evt) {
         $day = (int)(new DateTimeImmutable($evt['date']))->format('j');
-        $eventsByDay[$day][] = $evt['titre'];
+        $eventsByDay[$day][] = $evt;  // au lieu de $evt['titre']
     }
+
     // Charger jours fériés par défaut
     $defStmt = $pdo->prepare("
         SELECT jour
@@ -360,11 +362,18 @@ require __DIR__ . '/includes/header.php';
                                         <?php endif; ?>
                                         <?php if (!empty($eventsByDay[$d])): ?>
                                             <ul class="evt-list">
-                                                <?php foreach ($eventsByDay[$d] as $t): ?>
-                                                    <li class="evt-item"><?= htmlspecialchars($t, ENT_QUOTES) ?></li>
+                                                <?php foreach ($eventsByDay[$d] as $evt): ?>
+                                                    <li class="evt-item">
+                                                        <a href="#"
+                                                            class="evt-link"
+                                                            data-desc="<?= htmlspecialchars($evt['description'], ENT_QUOTES) ?>">
+                                                            <?= htmlspecialchars($evt['titre'], ENT_QUOTES) ?>
+                                                        </a>
+                                                    </li>
                                                 <?php endforeach; ?>
                                             </ul>
                                         <?php endif; ?>
+
                                         <?= $d ?><br>
                                         <?= ucfirst($wkdayF->format(new DateTimeImmutable("$Y-$m-" . sprintf('%02d', $d)))) ?>
                                     </th>
@@ -522,6 +531,20 @@ require __DIR__ . '/includes/header.php';
         });
 
         filter();
+    });
+
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('.evt-link').forEach(link => {
+            link.addEventListener('click', e => {
+                e.preventDefault();
+                const desc = link.dataset.desc.trim();
+                if (desc) {
+                    alert(desc);
+                } else {
+                    alert('Pas de description.');
+                }
+            });
+        });
     });
 </script>
 

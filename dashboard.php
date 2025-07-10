@@ -32,8 +32,8 @@ require_once __DIR__ . '/includes/header.php';
             <ul>
                 <li><a href="chef_mois.php">Ouvrir/fermer un mois</a></li>
                 <li><a href="chef_codes.php">Gérer les catégories et codes</a></li>
-                <li><a href="chef_souhaits.php">Valider/Refuser les souhaits</a></li>
                 <li><a href="chef_events.php">Gérer les événements</a></li>
+                <li><a href="chef_souhaits.php">Valider/Refuser les souhaits</a></li>
             </ul>
         </section>
     <?php endif; ?>
