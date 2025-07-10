@@ -3,6 +3,11 @@
 session_start();
 require_once __DIR__ . '/config/db.php';
 
+// Messages pour l’affichage d’erreurs et de succès
+$errors  = [];
+$success = '';
+
+
 // 0) Droits
 if (
     !isset($_SESSION['user_id'])
@@ -72,6 +77,16 @@ foreach ($allCodes as $c) {
 // 4) Sélection du mois et semaine
 $selectedMois = (int)($_GET['mois_id'] ?? 0);
 $weekIndex    = max(0, (int)($_GET['week'] ?? 0));
+// --- Charger le mois ouvert pour avoir $md['mois'] en POST ---
+if ($selectedMois) {
+    $mo2 = $pdo->prepare(
+        "SELECT mois
+           FROM mois_ouvert
+          WHERE id = ?"
+    );
+    $mo2->execute([$selectedMois]);
+    $md = $mo2->fetch(PDO::FETCH_ASSOC);
+}
 
 // 4a) Calcul du solde d'heures supplémentaires de l'agent connecté
 $hsStmt = $pdo->prepare("
@@ -88,17 +103,48 @@ $hsMins  = $totalMin % 60;
 
 
 // 5) Traitement POST (modifier ou soumettre)
-$success = '';
-$errors  = [];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $selectedMois) {
     if (isset($_POST['modify_jour'])) {
         $d = (int)$_POST['modify_jour'];
-        $pdo->prepare(
-            "DELETE FROM souhaits
-             WHERE user_id = ?
-               AND mois_ouvert_id = ?
-               AND jour = ?"
-        )->execute([$userId, $selectedMois, $d]);
+
+        // --- 1) Récupérer les anciens souhaits VALIDÉS pour ce jour ---
+        $oldStmt = $pdo->prepare("
+            SELECT s.code_id, c.heures_supplementaires_inc
+            FROM souhaits s
+            JOIN code c ON s.code_id = c.id
+            WHERE s.user_id = ?
+              AND s.mois_ouvert_id = ?
+              AND s.jour = ?
+              AND s.statut = 'validated'
+        ");
+        $oldStmt->execute([$userId, $selectedMois, $d]);
+        $oldRows = $oldStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // --- 2) Construire la date (YYYY-MM-DD) pour supprimer HS ---
+        // on suppose $md['mois'] déjà chargé en "YYYY-MM"
+        $dateStr = sprintf('%s-%02d', $md['mois'], $d);
+
+        // --- 3) Supprimer les heures_supplementaires associées ---
+        $delHS = $pdo->prepare("
+            DELETE FROM heures_supplementaires
+            WHERE user_id = ?
+              AND DATE(date_saisie) = ?
+              AND minutes = ?
+        ");
+        foreach ($oldRows as $old) {
+            $mins = (int)$old['heures_supplementaires_inc'];
+            if ($mins !== 0) {
+                $delHS->execute([$userId, $dateStr, $mins]);
+            }
+        }
+
+        // --- 4) Supprimer les anciens souhaits ---
+        $pdo->prepare("
+            DELETE FROM souhaits
+            WHERE user_id = ?
+              AND mois_ouvert_id = ?
+              AND jour = ?
+        ")->execute([$userId, $selectedMois, $d]);
     } else {
         if (isset($_POST['submit_jour'])) {
             $jours = [(int)$_POST['submit_jour']];

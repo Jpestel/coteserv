@@ -82,11 +82,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // mise à jour
                 $upd = $pdo->prepare(
                     "UPDATE heures_supplementaires
-                       SET date_saisie = ?, minutes = ?
-                     WHERE id = ? AND user_id = ?"
+               SET date_saisie = ?, minutes = ?
+             WHERE id = ? AND user_id = ?"
                 );
                 $upd->execute([
-                    "$date 00:00:00",
+                    $date . ' 00:00:00',
                     $minutes,
                     (int)$editId,
                     $userId
@@ -96,16 +96,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // insertion
                 $ins = $pdo->prepare(
                     "INSERT INTO heures_supplementaires
-                      (user_id, date_saisie, minutes)
-                     VALUES (?, ?, ?)"
+              (user_id, date_saisie, minutes)
+             VALUES (?, ?, ?)"
                 );
                 $ins->execute([
                     $userId,
-                    "$date 00:00:00",
+                    $date . ' 00:00:00',
                     $minutes
                 ]);
                 $success = 'Heures supplémentaires enregistrées.';
-                // si nouveau mois, l'ajouter à la liste
                 if (!in_array(substr($date, 0, 7), $monthRows, true)) {
                     array_unshift($monthRows, substr($date, 0, 7));
                 }

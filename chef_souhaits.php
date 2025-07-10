@@ -57,32 +57,69 @@ if (
 
     // si validé, ajouter heures sup
     if ($nouveauStatut === 'validated') {
-        // récupérer user_id, code_id et date du souhait
+        // récupérer user_id, code_id et jour du souhait
         $stmt = $pdo->prepare(
-            'SELECT user_id, code_id, jour FROM souhaits WHERE id = ?'
+            'SELECT user_id, code_id, jour 
+               FROM souhaits 
+              WHERE id = ?'
         );
         $stmt->execute([$souhaitId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!empty($row['code_id'])) {
-            // récupérer minutes directement depuis le code (colonne minutes)
+            // récupérer l’incrément d’heures sup
             $codeStmt = $pdo->prepare(
-                'SELECT heures_supplementaires_inc FROM code WHERE id = ?'
+                'SELECT heures_supplementaires_inc 
+                   FROM code 
+                  WHERE id = ?'
             );
             $codeStmt->execute([$row['code_id']]);
             $minutes = (int)$codeStmt->fetchColumn();
 
             if ($minutes !== 0) {
-                // INSERT INTO heures_supplementaires …
-                $insHS = $pdo->prepare(
-                    'INSERT INTO heures_supplementaires
-            (user_id, date_saisie, minutes, created_at, updated_at)
-         VALUES (?, NOW(), ?, NOW(), NOW())'
+                // charger $md['mois'] pour construire la date
+                $mo = $pdo->prepare(
+                    'SELECT mois 
+                       FROM mois_ouvert 
+                      WHERE id = ?'
                 );
-                $insHS->execute([
+                $mo->execute([$moisId]);
+                $md = $mo->fetch(PDO::FETCH_ASSOC);
+
+                // construire la date du jour d'heures sup (YYYY-MM-DD 00:00:00)
+                $dateOvertime = sprintf(
+                    '%s-%02d 00:00:00',
+                    $md['mois'],
+                    $row['jour']
+                );
+
+                // anti-doublon : on ne réinsère pas si la même ligne existe
+                $chkHS = $pdo->prepare(
+                    'SELECT COUNT(*) 
+                       FROM heures_supplementaires
+                      WHERE user_id    = ?
+                        AND date_saisie = ?
+                        AND minutes     = ?'
+                );
+                $chkHS->execute([
                     $row['user_id'],
-                    $minutes
+                    $dateOvertime,
+                    $minutes,
                 ]);
+
+                if ($chkHS->fetchColumn() == 0) {
+                    // insertion unique
+                    $insHS = $pdo->prepare(
+                        'INSERT INTO heures_supplementaires
+                            (user_id, date_saisie, minutes, created_at, updated_at)
+                         VALUES (?, ?, ?, NOW(), NOW())'
+                    );
+                    $insHS->execute([
+                        $row['user_id'],
+                        $dateOvertime,
+                        $minutes,
+                    ]);
+                }
             }
         }
     }
@@ -90,6 +127,7 @@ if (
     header("Location: chef_souhaits.php?mois_id={$moisId}&week={$weekIndex}");
     exit;
 }
+
 
 // 5) Préparer la grille
 $weeks       = [];
